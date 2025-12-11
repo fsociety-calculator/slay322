@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-DragonShield - Linux System Security Panel
-Cyber-Dragon themed TUI for Linux security using LLM in agent mode.
-Uses OpenRouter as LLM provider with MCP-style tool execution.
+DragonShield v2 - Linux System Security Panel
+Minimalist console-style TUI with arrow navigation.
+Batch command execution and auto-fix capabilities.
 """
 
 import asyncio
@@ -19,6 +19,8 @@ from typing import Optional
 import httpx
 from rich.markdown import Markdown
 from rich.text import Text
+from rich.panel import Panel
+from rich.table import Table
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -27,109 +29,103 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Footer,
-    Header,
     Input,
     Label,
     ListItem,
     ListView,
-    LoadingIndicator,
+    OptionList,
     Static,
     TextArea,
+    Rule,
 )
+from textual.widgets.option_list import Option
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
 CONFIG_PATH = Path.home() / ".config" / "dragonshield" / "config.json"
-DATA_PATH = Path.home() / ".config" / "dragonshield" / "data.json"
 
 DEFAULT_CONFIG = {
     "api_key": "",
     "model": "anthropic/claude-3.5-sonnet",
     "max_iterations": 10,
     "command_timeout": 60,
+    "auto_fix": False,
     "excluded_paths": [
-        "/mnt/c",
-        "/mnt/d",
-        "/mnt/e",
-        "/mnt/wsl",
-        "/proc",
-        "/sys",
-        "/dev",
+        "/mnt/c", "/mnt/d", "/mnt/e", "/mnt/f",
+        "/mnt/wsl", "/proc", "/sys", "/dev",
     ],
     "redacted_patterns": [
-        r".*\.pem$",
-        r".*\.key$",
-        r".*id_rsa.*",
-        r".*id_ed25519.*",
-        r".*\.env$",
-        r".*password.*",
-        r".*secret.*",
-        r".*token.*",
-        r".*\.ssh/.*",
-        r".*/\.gnupg/.*",
+        r".*\.pem$", r".*\.key$", r".*id_rsa.*", r".*id_ed25519.*",
+        r".*\.env$", r".*password.*", r".*secret.*", r".*token.*",
+        r".*\.ssh/.*", r".*/\.gnupg/.*",
     ],
     "dangerous_commands": [
-        "rm -rf /",
-        "mkfs",
-        "dd if=",
-        ":(){:|:&};:",
-        "> /dev/sda",
-        "chmod -R 777 /",
-        "wget.*|.*sh",
-        "curl.*|.*sh",
+        "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){:|:&};:",
+        "> /dev/sda", "chmod -R 777 /", "wget.*|.*sh", "curl.*|.*sh",
     ],
 }
 
 AVAILABLE_MODELS = [
     "mistralai/devstral-2512:free",
-    "anthropic/claude-4-sonnet",
-    "openai/gpt-5",
-    "openai/gpt-5-mini",
-    "google/gemini-pro-2.5",
+    "anthropic/claude-3-haiku",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "google/gemini-pro-1.5",
+    "google/gemini-flash-1.5",
     "meta-llama/llama-3.1-70b-instruct",
     "mistralai/mistral-large",
     "deepseek/deepseek-chat",
 ]
 
-SYSTEM_PROMPT = """You are DragonShield, an advanced Linux system security analyzer.
-Your role is to analyze the security posture of a Linux system by requesting
-command executions and analyzing their outputs.
+SYSTEM_PROMPT = """You are DragonShield, a Linux security analyzer.
+Analyze security posture by requesting commands and analyzing outputs.
 
-IMPORTANT RULES:
-1. You are a DEFENSIVE security tool - never suggest offensive actions
-2. Only request commands that gather information or fix security issues
-3. Never request commands that could damage the system
-4. Always explain why you need each command
-5. Respect user privacy - some paths/files are REDACTED for privacy
+RULES:
+1. DEFENSIVE tool only - no offensive actions
+2. Only gather info or fix security issues
+3. Never damage the system
+4. Respect REDACTED content (privacy)
 
-WORKFLOW:
-1. Start by gathering basic system information
-2. Analyze security configurations
-3. Check for vulnerabilities
-4. Provide actionable recommendations
+OUTPUT FORMAT - Always respond with valid JSON:
 
-OUTPUT FORMAT:
-When you need to execute commands, respond with JSON:
+To execute commands (batch them together):
 {
     "action": "execute",
     "commands": [
-        {"cmd": "command here", "reason": "why this command"}
+        {"cmd": "command1", "purpose": "why"},
+        {"cmd": "command2", "purpose": "why"}
     ]
 }
 
-When you have enough information for a report:
+To provide final report:
 {
     "action": "report",
-    "summary": "Brief security assessment",
+    "summary": "Overall security assessment",
     "findings": [
-        {"severity": "high|medium|low", "issue": "description", "fix": "command or action"}
-    ],
-    "fix_commands": ["list of commands to fix issues"]
+        {"severity": "critical|high|medium|low", "issue": "description", "fix_cmd": "command or null"}
+    ]
 }
 
-Start by gathering essential system information."""
+Batch multiple commands in single request for efficiency.
+Start gathering system information now."""
+
+
+# =============================================================================
+# DRAGON ASCII ART
+# =============================================================================
+
+DRAGON_LOGO = """[red]
+    __  ___                        ____  __    _      __   __
+   / / / (_)_________  ____  _____/ __ \/ /_  (_)__  / /__/ /
+  / / / / / ___/ __ \/ __ \/ ___/ / / / __ \/ / _ \/ / __  / 
+ / /_/ / / /  / /_/ / / / (__  ) /_/ / / / / /  __/ / /_/ /  
+/_____/_/_/   \____/_/ /_/____/_____/_/ /_/_/\___/_/\__,_/   
+                                                              
+[/red][dim red]>>>  SECURITY SCANNER  <<<[/dim red]"""
+
+SMALL_DRAGON = """[red]<:::[/red][bold red]DRAGONSHIELD[/bold red][red]:::>[/red]"""
 
 
 # =============================================================================
@@ -138,20 +134,9 @@ Start by gathering essential system information."""
 
 @dataclass
 class ChatMessage:
-    """Represents a message in the chat history."""
-    role: str  # "system", "user", "assistant", "command", "result"
+    role: str
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
-
-
-@dataclass
-class ScanResult:
-    """Represents a completed security scan result."""
-    timestamp: datetime
-    summary: str
-    findings: list
-    fix_commands: list
-    chat_history: list
 
 
 # =============================================================================
@@ -159,35 +144,28 @@ class ScanResult:
 # =============================================================================
 
 class ConfigManager:
-    """Manages application configuration and data persistence."""
-    
     def __init__(self):
         self.config = DEFAULT_CONFIG.copy()
         self.load_config()
     
     def load_config(self) -> None:
-        """Load configuration from file."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         if CONFIG_PATH.exists():
             try:
                 with open(CONFIG_PATH, "r") as f:
-                    loaded = json.load(f)
-                    self.config.update(loaded)
+                    self.config.update(json.load(f))
             except Exception:
                 pass
     
     def save_config(self) -> None:
-        """Save configuration to file."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w") as f:
             json.dump(self.config, f, indent=2)
     
     def get(self, key: str, default=None):
-        """Get configuration value."""
         return self.config.get(key, default)
     
     def set(self, key: str, value) -> None:
-        """Set configuration value."""
         self.config[key] = value
         self.save_config()
 
@@ -197,66 +175,45 @@ class ConfigManager:
 # =============================================================================
 
 class SecurityEngine:
-    """Handles command execution and LLM interaction."""
-    
     def __init__(self, config: ConfigManager):
         self.config = config
         self.chat_history: list[ChatMessage] = []
         self.http_client = httpx.AsyncClient(timeout=120.0)
     
     def is_path_excluded(self, path: str) -> bool:
-        """Check if path should be excluded from scanning."""
-        excluded = self.config.get("excluded_paths", [])
-        for exc in excluded:
+        for exc in self.config.get("excluded_paths", []):
             if path.startswith(exc):
                 return True
         return False
     
     def should_redact(self, text: str) -> bool:
-        """Check if content should be redacted."""
-        patterns = self.config.get("redacted_patterns", [])
-        for pattern in patterns:
+        for pattern in self.config.get("redacted_patterns", []):
             if re.search(pattern, text, re.IGNORECASE):
                 return True
         return False
     
     def redact_sensitive(self, text: str) -> str:
-        """Redact sensitive information from text."""
-        lines = text.split("\n")
-        redacted_lines = []
-        
-        for line in lines:
-            # Redact file paths that match patterns
+        lines = []
+        for line in text.split("\n"):
             if self.should_redact(line):
-                redacted_lines.append("[REDACTED - Sensitive file/content]")
-            # Redact Windows paths in WSL
+                lines.append("[REDACTED]")
             elif re.search(r"/mnt/[a-z]/", line):
-                redacted_lines.append("[REDACTED - Windows filesystem]")
+                lines.append("[REDACTED:WINDOWS]")
             else:
-                redacted_lines.append(line)
-        
-        return "\n".join(redacted_lines)
+                lines.append(line)
+        return "\n".join(lines)
     
     def is_command_safe(self, cmd: str) -> tuple[bool, str]:
-        """Check if command is safe to execute."""
-        dangerous = self.config.get("dangerous_commands", [])
-        cmd_lower = cmd.lower()
-        
-        for pattern in dangerous:
+        cmd_lower = cmd.lower().strip()
+        for pattern in self.config.get("dangerous_commands", []):
             if re.search(pattern, cmd_lower):
-                return False, f"Blocked dangerous pattern: {pattern}"
-        
-        # Additional safety checks
-        if "sudo" in cmd and "rm" in cmd and "-rf" in cmd:
-            return False, "Blocked: dangerous rm -rf with sudo"
-        
+                return False, f"Blocked: {pattern}"
         return True, "OK"
     
     async def execute_command(self, cmd: str) -> tuple[bool, str]:
-        """Execute a shell command safely."""
         is_safe, reason = self.is_command_safe(cmd)
         if not is_safe:
-            return False, f"Command blocked: {reason}"
+            return False, reason
         
         try:
             timeout = self.config.get("command_timeout", 60)
@@ -265,293 +222,250 @@ class SecurityEngine:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             
             output = stdout.decode("utf-8", errors="replace")
             if stderr:
-                output += "\n[STDERR]\n" + stderr.decode("utf-8", errors="replace")
+                output += "\n" + stderr.decode("utf-8", errors="replace")
             
-            # Redact sensitive information
-            output = self.redact_sensitive(output)
-            
-            return True, output[:50000]  # Limit output size
-            
+            return True, self.redact_sensitive(output[:30000])
         except asyncio.TimeoutError:
-            return False, f"Command timed out after {timeout}s"
+            return False, f"Timeout ({timeout}s)"
         except Exception as e:
-            return False, f"Execution error: {str(e)}"
+            return False, str(e)
+    
+    async def execute_batch(self, commands: list[dict]) -> list[dict]:
+        """Execute multiple commands in batch."""
+        results = []
+        for cmd_info in commands:
+            cmd = cmd_info.get("cmd", "")
+            success, output = await self.execute_command(cmd)
+            results.append({
+                "cmd": cmd,
+                "purpose": cmd_info.get("purpose", ""),
+                "success": success,
+                "output": output
+            })
+        return results
     
     async def call_llm(self, messages: list[dict]) -> str:
-        """Call OpenRouter API."""
         api_key = self.config.get("api_key")
         if not api_key:
-            raise ValueError("API key not configured")
-        
-        model = self.config.get("model", "anthropic/claude-3.5-sonnet")
+            raise ValueError("API key not set")
         
         response = await self.http_client.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/dragonshield",
-                "X-Title": "DragonShield Security Panel",
+                "HTTP-Referer": "https://dragonshield.local",
+                "X-Title": "DragonShield",
             },
             json={
-                "model": model,
+                "model": self.config.get("model"),
                 "messages": messages,
-                "temperature": 0.3,
+                "temperature": 0.2,
                 "max_tokens": 4096,
             },
         )
         
         if response.status_code != 200:
-            raise Exception(f"API error: {response.status_code} - {response.text}")
+            raise Exception(f"API error {response.status_code}: {response.text[:200]}")
         
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return response.json()["choices"][0]["message"]["content"]
     
-    def parse_llm_response(self, response: str) -> dict:
-        """Parse LLM response to extract JSON action."""
-        # Try to find JSON in response
-        json_match = re.search(r"\{[\s\S]*\}", response)
-        if json_match:
+    def parse_response(self, response: str) -> dict:
+        match = re.search(r"\{[\s\S]*\}", response)
+        if match:
             try:
-                return json.loads(json_match.group())
+                return json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-        
-        # Return as plain text if no JSON found
         return {"action": "text", "content": response}
     
     async def close(self):
-        """Close HTTP client."""
         await self.http_client.aclose()
 
 
 # =============================================================================
-# TUI STYLES
+# STYLES - Minimalist Console Theme
 # =============================================================================
 
 CSS = """
-$dragon-red: #dc143c;
-$dragon-dark-red: #8b0000;
-$dragon-black: #0a0a0a;
-$dragon-gray: #1a1a1a;
-$dragon-light: #2a2a2a;
-$dragon-text: #e0e0e0;
-$dragon-accent: #ff4444;
-
 Screen {
-    background: $dragon-black;
-}
-
-Header {
-    background: $dragon-dark-red;
-    color: $dragon-text;
-    text-style: bold;
-}
-
-Footer {
-    background: $dragon-gray;
-    color: $dragon-text;
+    background: #000000;
 }
 
 #main-container {
     width: 100%;
     height: 100%;
-    background: $dragon-black;
 }
 
-#sidebar {
-    width: 30;
-    background: $dragon-gray;
-    border-right: solid $dragon-dark-red;
-    padding: 1;
-}
-
-#content {
-    width: 100%;
-    background: $dragon-black;
-}
-
-#chat-container {
-    width: 100%;
-    height: 100%;
-    background: $dragon-black;
-    border: solid $dragon-dark-red;
-    padding: 1;
-}
-
-#input-container {
-    height: 3;
-    dock: bottom;
-    background: $dragon-gray;
+#menu-panel {
+    width: 28;
+    border-right: solid #8b0000;
     padding: 0 1;
-}
-
-.menu-button {
-    width: 100%;
-    margin: 0 0 1 0;
-    background: $dragon-light;
-    color: $dragon-text;
-    border: tall $dragon-dark-red;
-}
-
-.menu-button:hover {
-    background: $dragon-dark-red;
-    color: white;
-}
-
-.menu-button:focus {
-    background: $dragon-red;
-    color: white;
-    text-style: bold;
-}
-
-.chat-message {
-    width: 100%;
-    padding: 1;
-    margin: 0 0 1 0;
-    background: $dragon-gray;
-    border-left: tall $dragon-dark-red;
-}
-
-.chat-message.assistant {
-    border-left: tall $dragon-red;
-    background: $dragon-light;
-}
-
-.chat-message.command {
-    border-left: tall #ffaa00;
-    background: #1a1500;
-}
-
-.chat-message.result {
-    border-left: tall #00aa00;
-    background: #001500;
-}
-
-.chat-message.error {
-    border-left: tall #ff0000;
-    background: #150000;
-}
-
-.status-bar {
-    height: 1;
-    background: $dragon-gray;
-    color: $dragon-text;
-    padding: 0 1;
-    text-align: center;
 }
 
 #logo {
-    text-align: center;
-    color: $dragon-red;
-    text-style: bold;
-    padding: 1;
-}
-
-.section-title {
-    text-align: center;
-    color: $dragon-accent;
-    text-style: bold;
-    padding: 0 0 1 0;
-    border-bottom: solid $dragon-dark-red;
-    margin-bottom: 1;
-}
-
-ModalScreen {
-    align: center middle;
-}
-
-#modal-container {
-    width: 60;
     height: auto;
-    max-height: 80%;
-    background: $dragon-gray;
-    border: tall $dragon-red;
+    padding: 1 0;
+}
+
+#content-panel {
+    width: 100%;
+}
+
+#chat-scroll {
+    height: 100%;
+    border: solid #8b0000;
+    scrollbar-color: #dc143c;
+}
+
+#status-line {
+    height: 1;
+    dock: bottom;
+    background: #1a0000;
+    color: #888888;
+    padding: 0 1;
+}
+
+OptionList {
+    background: transparent;
+    border: solid #8b0000;
+    height: auto;
+    max-height: 20;
+    scrollbar-color: #dc143c;
+}
+
+OptionList:focus {
+    border: solid #dc143c;
+}
+
+OptionList > .option-list--option {
+    padding: 0 1;
+}
+
+OptionList > .option-list--option-highlighted {
+    background: #8b0000;
+    color: #ffffff;
+    text-style: bold;
+}
+
+OptionList > .option-list--option-hover {
+    background: #3a0000;
+}
+
+.section-header {
+    color: #dc143c;
+    text-style: bold;
+    padding: 1 0 0 0;
+}
+
+.msg-box {
+    padding: 0 1;
+    margin: 0 0 1 0;
+    border-left: tall #333333;
+}
+
+.msg-system {
+    border-left: tall #8b0000;
+    color: #888888;
+}
+
+.msg-assistant {
+    border-left: tall #dc143c;
+}
+
+.msg-command {
+    border-left: tall #b8860b;
+    color: #daa520;
+}
+
+.msg-result {
+    border-left: tall #2e8b57;
+    color: #888888;
+}
+
+.msg-error {
+    border-left: tall #ff0000;
+    color: #ff4444;
+}
+
+.msg-fix {
+    border-left: tall #4169e1;
+    color: #6495ed;
+}
+
+#modal-box {
+    width: 70;
+    height: auto;
+    max-height: 85%;
+    border: solid #dc143c;
+    background: #0a0000;
     padding: 1 2;
 }
 
 #modal-title {
     text-align: center;
+    color: #dc143c;
     text-style: bold;
-    color: $dragon-red;
     padding-bottom: 1;
-    border-bottom: solid $dragon-dark-red;
-    margin-bottom: 1;
 }
 
 Input {
-    background: $dragon-light;
-    border: tall $dragon-dark-red;
-    color: $dragon-text;
+    background: #1a1a1a;
+    border: solid #8b0000;
 }
 
 Input:focus {
-    border: tall $dragon-red;
+    border: solid #dc143c;
 }
 
 TextArea {
-    background: $dragon-light;
-    border: tall $dragon-dark-red;
+    background: #1a1a1a;
+    border: solid #8b0000;
+    height: 10;
+}
+
+Button {
+    margin: 1 1 0 0;
+}
+
+Button.-primary {
+    background: #8b0000;
+}
+
+Button.-primary:hover {
+    background: #dc143c;
+}
+
+Footer {
+    background: #0a0000;
+    color: #dc143c;
 }
 
 ListView {
-    background: $dragon-gray;
-    border: tall $dragon-dark-red;
     height: auto;
-    max-height: 15;
+    max-height: 12;
+    background: transparent;
+    border: solid #8b0000;
 }
 
 ListItem {
-    background: $dragon-light;
-    color: $dragon-text;
     padding: 0 1;
 }
 
 ListItem:hover {
-    background: $dragon-dark-red;
+    background: #3a0000;
 }
 
 ListItem.-selected {
-    background: $dragon-red;
-    color: white;
+    background: #8b0000;
 }
 
-LoadingIndicator {
-    color: $dragon-red;
-}
-
-#report-container {
-    width: 100%;
-    height: 100%;
-    background: $dragon-black;
-    padding: 1;
-}
-
-.finding-high {
-    background: #2a0000;
-    border-left: tall #ff0000;
-    padding: 1;
-    margin-bottom: 1;
-}
-
-.finding-medium {
-    background: #2a1a00;
-    border-left: tall #ffaa00;
-    padding: 1;
-    margin-bottom: 1;
-}
-
-.finding-low {
-    background: #1a2a00;
-    border-left: tall #aaff00;
-    padding: 1;
-    margin-bottom: 1;
+Rule {
+    color: #8b0000;
 }
 """
 
@@ -560,140 +474,121 @@ LoadingIndicator {
 # MODAL SCREENS
 # =============================================================================
 
-class SettingsScreen(ModalScreen[bool]):
-    """Settings configuration modal."""
+class SettingsModal(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "save", "Save", show=False),
+    ]
     
     def __init__(self, config: ConfigManager):
         super().__init__()
         self.config = config
     
     def compose(self) -> ComposeResult:
-        with Container(id="modal-container"):
-            yield Label("DRAGONSHIELD SETTINGS", id="modal-title")
+        with Container(id="modal-box"):
+            yield Label("SETTINGS", id="modal-title")
+            yield Rule()
             yield Label("OpenRouter API Key:")
-            yield Input(
-                value=self.config.get("api_key", ""),
-                password=True,
-                id="api-key-input",
-                placeholder="sk-or-..."
-            )
-            yield Label("Select Model:")
+            yield Input(value=self.config.get("api_key", ""), password=True, id="inp-key")
+            yield Label("Model:", classes="section-header")
             yield ListView(
-                *[ListItem(Label(m), id=f"model-{i}") 
-                  for i, m in enumerate(AVAILABLE_MODELS)],
+                *[ListItem(Label(m), id=f"m{i}") for i, m in enumerate(AVAILABLE_MODELS)],
                 id="model-list"
             )
-            yield Label("Command Timeout (seconds):")
-            yield Input(
-                value=str(self.config.get("command_timeout", 60)),
-                id="timeout-input"
-            )
-            yield Label("Max LLM Iterations:")
-            yield Input(
-                value=str(self.config.get("max_iterations", 10)),
-                id="iterations-input"
-            )
+            yield Label(f"Current: {self.config.get('model')}", id="current-model")
+            yield Label("Timeout (sec):")
+            yield Input(value=str(self.config.get("command_timeout", 60)), id="inp-timeout")
+            yield Label("Max iterations:")
+            yield Input(value=str(self.config.get("max_iterations", 10)), id="inp-iter")
             with Horizontal():
-                yield Button("Save", variant="primary", id="save-btn")
-                yield Button("Cancel", id="cancel-btn")
-    
-    @on(Button.Pressed, "#save-btn")
-    def save_settings(self) -> None:
-        api_key = self.query_one("#api-key-input", Input).value
-        timeout = self.query_one("#timeout-input", Input).value
-        iterations = self.query_one("#iterations-input", Input).value
-        
-        self.config.set("api_key", api_key)
-        try:
-            self.config.set("command_timeout", int(timeout))
-            self.config.set("max_iterations", int(iterations))
-        except ValueError:
-            pass
-        
-        self.dismiss(True)
-    
-    @on(Button.Pressed, "#cancel-btn")
-    def cancel(self) -> None:
-        self.dismiss(False)
+                yield Button("[S]ave", variant="primary", id="btn-save")
+                yield Button("[C]ancel", id="btn-cancel")
     
     @on(ListView.Selected, "#model-list")
-    def select_model(self, event: ListView.Selected) -> None:
-        index = int(event.item.id.split("-")[1])
-        self.config.set("model", AVAILABLE_MODELS[index])
+    def on_model_select(self, event: ListView.Selected) -> None:
+        idx = int(event.item.id[1:])
+        self.config.set("model", AVAILABLE_MODELS[idx])
+        self.query_one("#current-model", Label).update(f"Current: {AVAILABLE_MODELS[idx]}")
+    
+    @on(Button.Pressed, "#btn-save")
+    def action_save(self) -> None:
+        self.config.set("api_key", self.query_one("#inp-key", Input).value)
+        try:
+            self.config.set("command_timeout", int(self.query_one("#inp-timeout", Input).value))
+            self.config.set("max_iterations", int(self.query_one("#inp-iter", Input).value))
+        except ValueError:
+            pass
+        self.dismiss(True)
+    
+    @on(Button.Pressed, "#btn-cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
-class ExclusionsScreen(ModalScreen[bool]):
-    """Privacy exclusions configuration modal."""
+class ExclusionsModal(ModalScreen[bool]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
     
     def __init__(self, config: ConfigManager):
         super().__init__()
         self.config = config
     
     def compose(self) -> ComposeResult:
-        excluded = self.config.get("excluded_paths", [])
-        with Container(id="modal-container"):
+        with Container(id="modal-box"):
             yield Label("PRIVACY EXCLUSIONS", id="modal-title")
-            yield Label("Excluded Paths (one per line):")
-            yield TextArea(
-                "\n".join(excluded),
-                id="excluded-paths",
-            )
-            yield Label("Redacted File Patterns (regex, one per line):")
-            yield TextArea(
-                "\n".join(self.config.get("redacted_patterns", [])),
-                id="redacted-patterns",
-            )
+            yield Rule()
+            yield Label("Excluded paths (one per line):")
+            yield TextArea("\n".join(self.config.get("excluded_paths", [])), id="ta-paths")
+            yield Label("Redacted patterns (regex, one per line):")
+            yield TextArea("\n".join(self.config.get("redacted_patterns", [])), id="ta-patterns")
             with Horizontal():
-                yield Button("Save", variant="primary", id="save-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button("[S]ave", variant="primary", id="btn-save")
+                yield Button("[C]ancel", id="btn-cancel")
     
-    @on(Button.Pressed, "#save-btn")
-    def save_settings(self) -> None:
-        paths = self.query_one("#excluded-paths", TextArea).text
-        patterns = self.query_one("#redacted-patterns", TextArea).text
-        
-        self.config.set("excluded_paths", [p.strip() for p in paths.split("\n") if p.strip()])
-        self.config.set("redacted_patterns", [p.strip() for p in patterns.split("\n") if p.strip()])
-        
+    @on(Button.Pressed, "#btn-save")
+    def save(self) -> None:
+        paths = [p.strip() for p in self.query_one("#ta-paths", TextArea).text.split("\n") if p.strip()]
+        patterns = [p.strip() for p in self.query_one("#ta-patterns", TextArea).text.split("\n") if p.strip()]
+        self.config.set("excluded_paths", paths)
+        self.config.set("redacted_patterns", patterns)
         self.dismiss(True)
     
-    @on(Button.Pressed, "#cancel-btn")
-    def cancel(self) -> None:
+    @on(Button.Pressed, "#btn-cancel")
+    def action_cancel(self) -> None:
         self.dismiss(False)
 
 
-class ReportScreen(ModalScreen[None]):
-    """Security report display modal."""
+class ConfirmFixModal(ModalScreen[bool]):
+    """Confirm before applying fixes."""
+    BINDINGS = [
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "deny", "No"),
+        Binding("escape", "deny", "Cancel"),
+    ]
     
-    def __init__(self, report: dict):
+    def __init__(self, commands: list[str]):
         super().__init__()
-        self.report = report
+        self.commands = commands
     
     def compose(self) -> ComposeResult:
-        with ScrollableContainer(id="modal-container"):
-            yield Label("SECURITY REPORT", id="modal-title")
-            yield Static(Markdown(f"## Summary\n\n{self.report.get('summary', 'No summary')}"))
-            
-            yield Label("Findings:", classes="section-title")
-            for finding in self.report.get("findings", []):
-                severity = finding.get("severity", "low")
-                yield Static(
-                    Markdown(f"**[{severity.upper()}]** {finding.get('issue', '')}\n\n"
-                            f"**Fix:** {finding.get('fix', 'N/A')}"),
-                    classes=f"finding-{severity}"
-                )
-            
-            if self.report.get("fix_commands"):
-                yield Label("Fix Commands:", classes="section-title")
-                yield Static(Markdown("```bash\n" + 
-                    "\n".join(self.report.get("fix_commands", [])) + 
-                    "\n```"))
-            
-            yield Button("Close", id="close-btn")
+        with Container(id="modal-box"):
+            yield Label("APPLY SECURITY FIXES?", id="modal-title")
+            yield Rule()
+            yield Label("The following commands will be executed:")
+            yield Static("\n".join(f"  $ {c}" for c in self.commands[:15]))
+            if len(self.commands) > 15:
+                yield Label(f"  ... and {len(self.commands) - 15} more")
+            yield Rule()
+            with Horizontal():
+                yield Button("[Y]es, apply", variant="primary", id="btn-yes")
+                yield Button("[N]o, skip", id="btn-no")
     
-    @on(Button.Pressed, "#close-btn")
-    def close_report(self) -> None:
-        self.dismiss(None)
+    @on(Button.Pressed, "#btn-yes")
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+    
+    @on(Button.Pressed, "#btn-no")
+    def action_deny(self) -> None:
+        self.dismiss(False)
 
 
 # =============================================================================
@@ -701,15 +596,19 @@ class ReportScreen(ModalScreen[None]):
 # =============================================================================
 
 class DragonShieldApp(App):
-    """Main DragonShield TUI Application."""
-    
-    TITLE = "DragonShield Security Panel"
     CSS = CSS
+    TITLE = "DragonShield"
+    
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("s", "scan", "Scan"),
-        Binding("c", "settings", "Config"),
-        Binding("escape", "stop_scan", "Stop"),
+        Binding("1", "menu_scan", "Scan", show=False),
+        Binding("2", "menu_settings", "Settings", show=False),
+        Binding("3", "menu_exclusions", "Exclusions", show=False),
+        Binding("4", "menu_clear", "Clear", show=False),
+        Binding("5", "quit", "Quit", show=False),
+        Binding("escape", "stop", "Stop scan"),
+        Binding("up", "focus_prev", "Up", show=False),
+        Binding("down", "focus_next", "Down", show=False),
     ]
     
     def __init__(self):
@@ -717,265 +616,217 @@ class DragonShieldApp(App):
         self.config = ConfigManager()
         self.engine = SecurityEngine(self.config)
         self.is_scanning = False
-        self.current_report: Optional[dict] = None
+        self.pending_fixes: list[str] = []
     
     def compose(self) -> ComposeResult:
-        yield Header()
         with Horizontal(id="main-container"):
-            with Vertical(id="sidebar"):
-                yield Static(
-                    Text.from_markup(
-                        "[bold red]<<<  DRAGON  >>>\n"
-                        "[bold red]<<<  SHIELD  >>>\n"
-                        "[dim red]Security Panel"
-                    ),
-                    id="logo"
+            with Vertical(id="menu-panel"):
+                yield Static(SMALL_DRAGON, id="logo")
+                yield Rule()
+                yield OptionList(
+                    Option("[1] Start Scan", id="opt-scan"),
+                    Option("[2] Settings", id="opt-settings"),
+                    Option("[3] Exclusions", id="opt-exclusions"),
+                    Option("[4] Clear Log", id="opt-clear"),
+                    Option("[5] Quit", id="opt-quit"),
+                    id="main-menu"
                 )
-                yield Label("ACTIONS", classes="section-title")
-                yield Button("Start Scan", id="scan-btn", classes="menu-button")
-                yield Button("View Report", id="report-btn", classes="menu-button")
-                yield Button("Settings", id="settings-btn", classes="menu-button")
-                yield Button("Exclusions", id="exclusions-btn", classes="menu-button")
-                yield Button("Clear Chat", id="clear-btn", classes="menu-button")
-                yield Button("Quit", id="quit-btn", classes="menu-button")
-                yield Static("", classes="status-bar", id="status")
-            with Vertical(id="content"):
-                yield ScrollableContainer(id="chat-container")
-                yield Static(
-                    f"Model: {self.config.get('model', 'N/A')} | "
-                    f"Press 's' to scan | 'q' to quit",
-                    classes="status-bar"
-                )
+                yield Rule()
+                yield Static("", id="status-info")
+            with Vertical(id="content-panel"):
+                yield ScrollableContainer(id="chat-scroll")
+                yield Static("Ready | [q]uit [1-5]menu [Esc]stop", id="status-line")
         yield Footer()
     
     def on_mount(self) -> None:
-        """Called when app is mounted."""
-        self.add_chat_message(
-            "system",
-            "# DragonShield Initialized\n\n"
-            "Welcome to DragonShield Security Panel.\n\n"
-            "- Configure your OpenRouter API key in **Settings**\n"
-            "- Set privacy **Exclusions** for sensitive paths\n"
-            "- Click **Start Scan** to begin security analysis\n\n"
-            "*Ensure you are running as root (sudo) for full access.*"
-        )
-        self.check_sudo()
-    
-    def check_sudo(self) -> None:
-        """Check if running as root."""
+        self.query_one("#main-menu", OptionList).focus()
+        self.log_msg("system", DRAGON_LOGO)
+        self.log_msg("system", 
+            "System security scanner initialized.\n"
+            "Use arrow keys to navigate, Enter to select.\n"
+            f"Running as: {'root' if os.geteuid() == 0 else 'USER (limited)'}")
+        
         if os.geteuid() != 0:
-            self.add_chat_message(
-                "error",
-                "**WARNING:** Not running as root!\n\n"
-                "Some security checks require root access.\n"
-                "Please restart with: `sudo python dragon_shield.py`"
-            )
-    
-    def add_chat_message(self, role: str, content: str) -> None:
-        """Add a message to the chat container."""
-        container = self.query_one("#chat-container", ScrollableContainer)
-        
-        # Create styled message widget
-        if role == "assistant":
-            prefix = "[DRAGONSHIELD]"
-        elif role == "command":
-            prefix = "[EXECUTING]"
-        elif role == "result":
-            prefix = "[OUTPUT]"
-        elif role == "error":
-            prefix = "[ERROR]"
-        else:
-            prefix = "[SYSTEM]"
-        
-        message = Static(
-            Markdown(f"**{prefix}**\n\n{content}"),
-            classes=f"chat-message {role}"
-        )
-        container.mount(message)
-        container.scroll_end(animate=False)
-        
-        # Store in history
-        self.engine.chat_history.append(ChatMessage(role=role, content=content))
-    
-    def update_status(self, text: str) -> None:
-        """Update status bar."""
-        status = self.query_one("#status", Static)
-        status.update(text)
-    
-    @on(Button.Pressed, "#scan-btn")
-    def action_scan(self) -> None:
-        """Start security scan."""
-        if self.is_scanning:
-            self.notify("Scan already in progress", severity="warning")
-            return
+            self.log_msg("error", "WARNING: Not running as root. Some checks may fail.")
         
         if not self.config.get("api_key"):
-            self.notify("Please configure API key first", severity="error")
-            self.push_screen(SettingsScreen(self.config))
+            self.log_msg("system", "No API key configured. Open [2] Settings first.")
+    
+    def log_msg(self, role: str, content: str) -> None:
+        """Add message to chat log."""
+        container = self.query_one("#chat-scroll", ScrollableContainer)
+        widget = Static(Markdown(content) if role == "assistant" else content, 
+                       classes=f"msg-box msg-{role}")
+        container.mount(widget)
+        container.scroll_end(animate=False)
+    
+    def update_status(self, text: str) -> None:
+        self.query_one("#status-info", Static).update(f"[dim]{text}[/dim]")
+        self.query_one("#status-line", Static).update(text)
+    
+    @on(OptionList.OptionSelected, "#main-menu")
+    def on_menu_select(self, event: OptionList.OptionSelected) -> None:
+        option_id = event.option.id
+        if option_id == "opt-scan":
+            self.action_menu_scan()
+        elif option_id == "opt-settings":
+            self.action_menu_settings()
+        elif option_id == "opt-exclusions":
+            self.action_menu_exclusions()
+        elif option_id == "opt-clear":
+            self.action_menu_clear()
+        elif option_id == "opt-quit":
+            self.exit()
+    
+    def action_menu_scan(self) -> None:
+        if self.is_scanning:
+            self.notify("Scan in progress", severity="warning")
             return
-        
+        if not self.config.get("api_key"):
+            self.notify("Configure API key first", severity="error")
+            return
         self.run_scan()
     
-    @on(Button.Pressed, "#report-btn")
-    def show_report(self) -> None:
-        """Show latest report."""
-        if self.current_report:
-            self.push_screen(ReportScreen(self.current_report))
-        else:
-            self.notify("No report available. Run a scan first.", severity="warning")
+    def action_menu_settings(self) -> None:
+        self.push_screen(SettingsModal(self.config))
     
-    @on(Button.Pressed, "#settings-btn")
-    def action_settings(self) -> None:
-        """Open settings."""
-        self.push_screen(SettingsScreen(self.config))
+    def action_menu_exclusions(self) -> None:
+        self.push_screen(ExclusionsModal(self.config))
     
-    @on(Button.Pressed, "#exclusions-btn")
-    def action_exclusions(self) -> None:
-        """Open exclusions."""
-        self.push_screen(ExclusionsScreen(self.config))
-    
-    @on(Button.Pressed, "#clear-btn")
-    def clear_chat(self) -> None:
-        """Clear chat history."""
-        container = self.query_one("#chat-container", ScrollableContainer)
+    def action_menu_clear(self) -> None:
+        container = self.query_one("#chat-scroll", ScrollableContainer)
         container.remove_children()
-        self.engine.chat_history.clear()
-        self.add_chat_message("system", "Chat cleared.")
+        self.log_msg("system", "Log cleared.")
     
-    @on(Button.Pressed, "#quit-btn")
-    def action_quit(self) -> None:
-        """Quit application."""
-        self.exit()
-    
-    def action_stop_scan(self) -> None:
-        """Stop current scan."""
+    def action_stop(self) -> None:
         if self.is_scanning:
             self.is_scanning = False
-            self.add_chat_message("system", "Scan stopped by user.")
-            self.update_status("Scan stopped")
+            self.log_msg("error", "Scan aborted by user.")
+            self.update_status("Stopped")
     
     @work(exclusive=True, thread=False)
     async def run_scan(self) -> None:
-        """Run the security scan using LLM agent."""
+        """Main scan loop with batch command execution."""
         self.is_scanning = True
+        self.pending_fixes = []
+        
+        self.log_msg("system", f"Starting scan with {self.config.get('model')}...")
         self.update_status("Scanning...")
         
-        self.add_chat_message(
-            "system",
-            "# Security Scan Started\n\n"
-            f"Using model: `{self.config.get('model')}`\n\n"
-            "Analyzing system security..."
-        )
-        
-        # Build conversation
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": 
-             "Please analyze the security of this Linux system. "
-             "Start by gathering essential system information."}
+            {"role": "user", "content": "Analyze this Linux system security. Batch your commands."}
         ]
         
-        max_iterations = self.config.get("max_iterations", 10)
-        iteration = 0
+        max_iter = self.config.get("max_iterations", 10)
         
         try:
-            while self.is_scanning and iteration < max_iterations:
-                iteration += 1
-                self.update_status(f"Iteration {iteration}/{max_iterations}")
+            for i in range(max_iter):
+                if not self.is_scanning:
+                    break
+                
+                self.update_status(f"Iteration {i+1}/{max_iter}")
                 
                 # Call LLM
                 response = await self.engine.call_llm(messages)
-                parsed = self.engine.parse_llm_response(response)
+                parsed = self.engine.parse_response(response)
+                action = parsed.get("action", "text")
                 
-                if parsed.get("action") == "execute":
-                    # Execute commands
+                if action == "execute":
+                    # Batch execute commands
                     commands = parsed.get("commands", [])
-                    self.add_chat_message(
-                        "assistant",
-                        f"Requesting execution of {len(commands)} command(s)..."
-                    )
+                    self.log_msg("assistant", f"Executing {len(commands)} command(s)...")
                     
-                    results = []
-                    for cmd_info in commands:
-                        cmd = cmd_info.get("cmd", "")
-                        reason = cmd_info.get("reason", "")
+                    results = await self.engine.execute_batch(commands)
+                    
+                    # Log each command and result
+                    result_text = []
+                    for r in results:
+                        status = "OK" if r["success"] else "FAIL"
+                        self.log_msg("command", f"$ {r['cmd']}\n# {r['purpose']}")
                         
-                        self.add_chat_message(
-                            "command",
-                            f"```bash\n{cmd}\n```\n\n*Reason: {reason}*"
+                        output = r["output"][:1500]
+                        if len(r["output"]) > 1500:
+                            output += "\n[...truncated]"
+                        self.log_msg("result", output if output.strip() else "(no output)")
+                        
+                        result_text.append(
+                            f"CMD: {r['cmd']}\nSTATUS: {status}\nOUTPUT:\n{r['output'][:3000]}"
+                        )
+                    
+                    # Add to conversation
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": "Results:\n\n" + "\n\n---\n\n".join(result_text)})
+                
+                elif action == "report":
+                    # Final report
+                    self.log_msg("assistant", "# Security Report\n\n" + parsed.get("summary", ""))
+                    
+                    findings = parsed.get("findings", [])
+                    for f in findings:
+                        sev = f.get("severity", "low").upper()
+                        icon = {"CRITICAL": "!!!", "HIGH": "!!", "MEDIUM": "!", "LOW": "."}.get(sev, "?")
+                        self.log_msg("assistant", 
+                            f"**[{sev}]** {icon} {f.get('issue', 'Unknown')}\n\n"
+                            f"Fix: `{f.get('fix_cmd', 'manual review needed')}`"
                         )
                         
-                        success, output = await self.engine.execute_command(cmd)
-                        
-                        if success:
-                            self.add_chat_message(
-                                "result",
-                                f"```\n{output[:2000]}{'...[truncated]' if len(output) > 2000 else ''}\n```"
-                            )
-                            results.append(f"Command: {cmd}\nOutput:\n{output}")
-                        else:
-                            self.add_chat_message("error", f"Failed: {output}")
-                            results.append(f"Command: {cmd}\nError: {output}")
+                        if f.get("fix_cmd"):
+                            self.pending_fixes.append(f["fix_cmd"])
                     
-                    # Add results to conversation
-                    messages.append({"role": "assistant", "content": response})
-                    messages.append({
-                        "role": "user", 
-                        "content": "Command results:\n\n" + "\n\n---\n\n".join(results)
-                    })
-                
-                elif parsed.get("action") == "report":
-                    # Final report
-                    self.current_report = parsed
-                    
-                    summary = parsed.get("summary", "Analysis complete")
-                    findings = parsed.get("findings", [])
-                    
-                    report_md = f"# Security Report\n\n## Summary\n\n{summary}\n\n"
-                    report_md += "## Findings\n\n"
-                    
-                    for f in findings:
-                        severity = f.get("severity", "low").upper()
-                        report_md += f"### [{severity}] {f.get('issue', 'Unknown')}\n\n"
-                        report_md += f"**Fix:** {f.get('fix', 'N/A')}\n\n"
-                    
-                    if parsed.get("fix_commands"):
-                        report_md += "## Recommended Fix Commands\n\n```bash\n"
-                        report_md += "\n".join(parsed.get("fix_commands", []))
-                        report_md += "\n```\n"
-                    
-                    self.add_chat_message("assistant", report_md)
                     self.is_scanning = False
                     self.update_status("Scan complete")
-                    self.notify("Security scan complete!", severity="information")
+                    
+                    # Offer to apply fixes
+                    if self.pending_fixes:
+                        self.log_msg("system", f"\n{len(self.pending_fixes)} fix command(s) available.")
+                        self.prompt_fixes()
                     break
                 
                 else:
-                    # Plain text response
-                    self.add_chat_message("assistant", parsed.get("content", response))
+                    # Plain text
+                    self.log_msg("assistant", parsed.get("content", response))
                     messages.append({"role": "assistant", "content": response})
-                    messages.append({
-                        "role": "user",
-                        "content": "Please continue with your analysis or provide the final report."
-                    })
+                    messages.append({"role": "user", "content": "Continue analysis or provide final report."})
             
-            if iteration >= max_iterations:
-                self.add_chat_message(
-                    "error",
-                    f"Maximum iterations ({max_iterations}) reached. "
-                    "Scan incomplete. Try increasing the limit in settings."
-                )
+            else:
+                self.log_msg("error", f"Max iterations ({max_iter}) reached.")
         
         except Exception as e:
-            self.add_chat_message("error", f"Scan error: {str(e)}")
-            self.notify(f"Scan failed: {str(e)}", severity="error")
+            self.log_msg("error", f"Error: {e}")
         
         finally:
             self.is_scanning = False
             self.update_status("Ready")
     
+    def prompt_fixes(self) -> None:
+        """Show confirmation dialog for fixes."""
+        def handle_result(result: bool) -> None:
+            if result:
+                self.apply_fixes()
+        
+        self.push_screen(ConfirmFixModal(self.pending_fixes), handle_result)
+    
+    @work(exclusive=True, thread=False)
+    async def apply_fixes(self) -> None:
+        """Apply security fixes."""
+        self.log_msg("fix", "Applying security fixes...")
+        self.update_status("Applying fixes...")
+        
+        for cmd in self.pending_fixes:
+            self.log_msg("command", f"$ {cmd}")
+            success, output = await self.engine.execute_command(cmd)
+            
+            if success:
+                self.log_msg("result", output if output.strip() else "(done)")
+            else:
+                self.log_msg("error", f"Failed: {output}")
+        
+        self.log_msg("fix", "Fix application complete.")
+        self.pending_fixes = []
+        self.update_status("Ready")
+    
     async def on_unmount(self) -> None:
-        """Cleanup on exit."""
         await self.engine.close()
 
 
@@ -984,13 +835,10 @@ class DragonShieldApp(App):
 # =============================================================================
 
 def main():
-    """Main entry point."""
-    # Check Python version
     if sys.version_info < (3, 10):
-        print("Error: Python 3.10 or higher required")
+        print("Python 3.10+ required")
         sys.exit(1)
     
-    # Run application
     app = DragonShieldApp()
     app.run()
 
