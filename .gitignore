@@ -1,1 +1,4 @@
 venv/
+prompting.py
+prompt_config.json
+prompt_output.md

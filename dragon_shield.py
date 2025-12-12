@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
 DragonShield v2 - Linux System Security Panel
-Minimalist console-style TUI with arrow navigation.
-Batch command execution and auto-fix capabilities.
+Redesigned Interface: Center Layout, Red Scale Theme.
 """
 
 import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import httpx
 from rich.markdown import Markdown
-from rich.text import Text
-from rich.panel import Panel
-from rich.table import Table
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer, Center
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -116,16 +110,26 @@ Start gathering system information now."""
 # DRAGON ASCII ART
 # =============================================================================
 
-DRAGON_LOGO = """[red]
-    __  ___                        ____  __    _      __   __
-   / / / (_)_________  ____  _____/ __ \/ /_  (_)__  / /__/ /
-  / / / / / ___/ __ \/ __ \/ ___/ / / / __ \/ / _ \/ / __  / 
- / /_/ / / /  / /_/ / / / (__  ) /_/ / / / / /  __/ / /_/ /  
-/_____/_/_/   \____/_/ /_/____/_____/_/ /_/_/\___/_/\__,_/   
-                                                              
-[/red][dim red]>>>  SECURITY SCANNER  <<<[/dim red]"""
+DRAGON_LOGO = """[bold red]
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⣤⣤⣤⣤⡼⠀⢀⡀⣀⢱⡄⡀⠀⠀⠀⢲⣤⣤⣤⣤⣀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⣾⣿⣿⣿⣿⣿⡿⠛⠋⠁⣤⣿⣿⣿⣧⣷⠀⠀⠘⠉⠛⢻⣷⣿⣽⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢀⣴⣞⣽⣿⣿⣿⣿⣿⣿⣿⠁⠀⠀⠠⣿⣿⡟⢻⣿⣿⣇⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣟⢦⡀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⣠⣿⡾⣿⣿⣿⣿⣿⠿⣻⣿⣿⡀⠀⠀⠀⢻⣿⣷⡀⠻⣧⣿⠆⠀⠀⠀⠀⣿⣿⣿⡻⣿⣿⣿⣿⣿⠿⣽⣦⡀⠀⠀⠀⠀
+⠀⠀⠀⠀⣼⠟⣩⣾⣿⣿⣿⢟⣵⣾⣿⣿⣿⣧⠀⠀⠀⠈⠿⣿⣿⣷⣈⠁⠀⠀⠀⠀⣰⣿⣿⣿⣿⣮⣟⢯⣿⣿⣷⣬⡻⣷⡄⠀⠀⠀
+⠀⠀⢀⡜⣡⣾⣿⢿⣿⣿⣿⣿⣿⢟⣵⣿⣿⣿⣷⣄⠀⣰⣿⣿⣿⣿⣿⣷⣄⠀⢀⣼⣿⣿⣿⣷⡹⣿⣿⣿⣿⣿⣿⢿⣿⣮⡳⡄⠀⠀
+⠀⢠⢟⣿⡿⠋⣠⣾⢿⣿⣿⠟⢃⣾⢟⣿⢿⣿⣿⣿⣾⡿⠟⠻⣿⣻⣿⣏⠻⣿⣾⣿⣿⣿⣿⡛⣿⡌⠻⣿⣿⡿⣿⣦⡙⢿⣿⡝⣆⠀
+⠀⢯⣿⠏⣠⠞⠋⠀⣠⡿⠋⢀⣿⠁⢸⡏⣿⠿⣿⣿⠃⢠⣴⣾⣿⣿⣿⡟⠀⠘⢹⣿⠟⣿⣾⣷⠈⣿⡄⠘⢿⣦⠀⠈⠻⣆⠙⣿⣜⠆
+⢀⣿⠃⡴⠃⢀⡠⠞⠋⠀⠀⠼⠋⠀⠸⡇⠻⠀⠈⠃⠀⣧⢋⣼⣿⣿⣿⣷⣆⠀⠈⠁⠀⠟⠁⡟⠀⠈⠻⠀⠀⠉⠳⢦⡀⠈⢣⠈⢿⡄
+⣸⠇⢠⣷⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⠻⠿⠿⠋⠀⢻⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠙⢾⣆⠈⣷
+⡟⠀⡿⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣶⣤⡀⢸⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⡄⢹
+⡇⠀⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⠈⣿⣼⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠃⢸
+⢡⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⠶⣶⡟⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡼
+⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡾⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                       ⢿⣿⣤⣀⣠⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+[/]"""
 
-SMALL_DRAGON = """[red]<:::[/red][bold red]DRAGONSHIELD[/bold red][red]:::>[/red]"""
+TITLE_TEXT = "[bold #ff0000]DRAGON[/][bold #8b0000]SHIELD[/] [dim #ff4444]SYSTEM GUARD[/]"
 
 
 # =============================================================================
@@ -235,7 +239,6 @@ class SecurityEngine:
             return False, str(e)
     
     async def execute_batch(self, commands: list[dict]) -> list[dict]:
-        """Execute multiple commands in batch."""
         results = []
         for cmd_info in commands:
             cmd = cmd_info.get("cmd", "")
@@ -288,62 +291,59 @@ class SecurityEngine:
 
 
 # =============================================================================
-# STYLES - Minimalist Console Theme
+# STYLES - Red & Black Theme
 # =============================================================================
 
 CSS = """
+/* BASE THEME */
 Screen {
     background: #000000;
+    color: #ffcccc;
 }
 
-#main-container {
+/* LAYOUT STRUCTURE */
+#top-container {
+    height: auto;
     width: 100%;
-    height: 100%;
-}
-
-#menu-panel {
-    width: 28;
-    border-right: solid #8b0000;
-    padding: 0 1;
+    align: center middle;
+    padding-top: 1;
 }
 
 #logo {
+    text-align: center;
+    color: #ff0000;
     height: auto;
-    padding: 1 0;
+    margin-bottom: 0;
 }
 
-#content-panel {
-    width: 100%;
+#title {
+    text-align: center;
+    margin-bottom: 1;
 }
 
-#chat-scroll {
-    height: 100%;
-    border: solid #8b0000;
-    scrollbar-color: #dc143c;
-}
-
-#status-line {
-    height: 1;
-    dock: bottom;
-    background: #1a0000;
-    color: #888888;
-    padding: 0 1;
+#menu-container {
+    width: 50;
+    height: auto;
+    border: heavy #8b0000;
+    background: #050000;
+    margin-bottom: 1;
 }
 
 OptionList {
     background: transparent;
-    border: solid #8b0000;
+    border: none;
     height: auto;
-    max-height: 20;
-    scrollbar-color: #dc143c;
+    max-height: 8;
+    scrollbar-color: #ff0000;
 }
 
 OptionList:focus {
-    border: solid #dc143c;
+    border: none;
 }
 
 OptionList > .option-list--option {
-    padding: 0 1;
+    padding: 0 2;
+    color: #ff8888;
 }
 
 OptionList > .option-list--option-highlighted {
@@ -353,119 +353,156 @@ OptionList > .option-list--option-highlighted {
 }
 
 OptionList > .option-list--option-hover {
-    background: #3a0000;
+    background: #330000;
 }
 
-.section-header {
-    color: #dc143c;
-    text-style: bold;
-    padding: 1 0 0 0;
+#chat-scroll {
+    height: 1fr;
+    border-top: heavy #ff0000;
+    background: #080000;
+    scrollbar-color: #ff0000;
+    padding: 1;
 }
 
+#status-line {
+    height: 1;
+    dock: bottom;
+    background: #330000;
+    color: #ffaaaa;
+    padding: 0 1;
+}
+
+/* CHAT MESSAGE STYLES */
 .msg-box {
     padding: 0 1;
     margin: 0 0 1 0;
-    border-left: tall #333333;
 }
 
 .msg-system {
-    border-left: tall #8b0000;
-    color: #888888;
+    border-left: tall #550000;
+    color: #aa4444;
 }
 
 .msg-assistant {
-    border-left: tall #dc143c;
+    border-left: tall #ff0000;
+    color: #ffcccc;
 }
 
 .msg-command {
-    border-left: tall #b8860b;
-    color: #daa520;
+    border-left: tall #ff4500;
+    color: #ff8800;
 }
 
 .msg-result {
-    border-left: tall #2e8b57;
-    color: #888888;
+    border-left: tall #800000;
+    color: #ff9999;
 }
 
 .msg-error {
     border-left: tall #ff0000;
-    color: #ff4444;
+    color: #ff0000;
+    text-style: bold;
 }
 
 .msg-fix {
-    border-left: tall #4169e1;
-    color: #6495ed;
+    border-left: tall #ff1493;
+    color: #ff69b4;
 }
 
+/* MODAL STYLES */
 #modal-box {
     width: 70;
     height: auto;
     max-height: 85%;
-    border: solid #dc143c;
+    border: heavy #ff0000;
     background: #0a0000;
     padding: 1 2;
 }
 
 #modal-title {
     text-align: center;
-    color: #dc143c;
+    color: #ff0000;
     text-style: bold;
     padding-bottom: 1;
 }
 
+Label {
+    color: #ffaaaa;
+}
+
 Input {
-    background: #1a1a1a;
-    border: solid #8b0000;
+    background: #1a0000;
+    border: solid #550000;
+    color: #ffffff;
 }
 
 Input:focus {
-    border: solid #dc143c;
+    border: solid #ff0000;
 }
 
 TextArea {
-    background: #1a1a1a;
-    border: solid #8b0000;
+    background: #1a0000;
+    border: solid #550000;
+    color: #ffcccc;
     height: 10;
+}
+
+TextArea:focus {
+    border: solid #ff0000;
 }
 
 Button {
     margin: 1 1 0 0;
+    background: #330000;
+    color: #ffcccc;
+    border: none;
+}
+
+Button:hover {
+    background: #550000;
 }
 
 Button.-primary {
     background: #8b0000;
+    color: #ffffff;
 }
 
 Button.-primary:hover {
-    background: #dc143c;
+    background: #ff0000;
 }
 
-Footer {
-    background: #0a0000;
-    color: #dc143c;
-}
-
+/* LIST VIEW */
 ListView {
     height: auto;
-    max-height: 12;
-    background: transparent;
-    border: solid #8b0000;
+    max-height: 10;
+    background: #0a0000;
+    border: solid #550000;
+}
+
+ListView:focus {
+    border: solid #ff0000;
 }
 
 ListItem {
-    padding: 0 1;
+    color: #ff8888;
 }
 
 ListItem:hover {
-    background: #3a0000;
+    background: #330000;
 }
 
 ListItem.-selected {
     background: #8b0000;
+    color: #ffffff;
 }
 
 Rule {
     color: #8b0000;
+}
+
+Footer {
+    background: #220000;
+    color: #ff0000;
 }
 """
 
@@ -486,11 +523,11 @@ class SettingsModal(ModalScreen[bool]):
     
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("SETTINGS", id="modal-title")
+            yield Label("SYSTEM CONFIGURATION", id="modal-title")
             yield Rule()
-            yield Label("OpenRouter API Key:")
+            yield Label("API Key:")
             yield Input(value=self.config.get("api_key", ""), password=True, id="inp-key")
-            yield Label("Model:", classes="section-header")
+            yield Label("AI Model:")
             yield ListView(
                 *[ListItem(Label(m), id=f"m{i}") for i, m in enumerate(AVAILABLE_MODELS)],
                 id="model-list"
@@ -498,11 +535,11 @@ class SettingsModal(ModalScreen[bool]):
             yield Label(f"Current: {self.config.get('model')}", id="current-model")
             yield Label("Timeout (sec):")
             yield Input(value=str(self.config.get("command_timeout", 60)), id="inp-timeout")
-            yield Label("Max iterations:")
+            yield Label("Max Iterations:")
             yield Input(value=str(self.config.get("max_iterations", 10)), id="inp-iter")
             with Horizontal():
-                yield Button("[S]ave", variant="primary", id="btn-save")
-                yield Button("[C]ancel", id="btn-cancel")
+                yield Button("SAVE", variant="primary", id="btn-save")
+                yield Button("CANCEL", id="btn-cancel")
     
     @on(ListView.Selected, "#model-list")
     def on_model_select(self, event: ListView.Selected) -> None:
@@ -534,15 +571,15 @@ class ExclusionsModal(ModalScreen[bool]):
     
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("PRIVACY EXCLUSIONS", id="modal-title")
+            yield Label("EXCLUSION PROTOCOLS", id="modal-title")
             yield Rule()
-            yield Label("Excluded paths (one per line):")
+            yield Label("Restricted Paths (one per line):")
             yield TextArea("\n".join(self.config.get("excluded_paths", [])), id="ta-paths")
-            yield Label("Redacted patterns (regex, one per line):")
+            yield Label("Redaction Patterns (regex):")
             yield TextArea("\n".join(self.config.get("redacted_patterns", [])), id="ta-patterns")
             with Horizontal():
-                yield Button("[S]ave", variant="primary", id="btn-save")
-                yield Button("[C]ancel", id="btn-cancel")
+                yield Button("SAVE", variant="primary", id="btn-save")
+                yield Button("CANCEL", id="btn-cancel")
     
     @on(Button.Pressed, "#btn-save")
     def save(self) -> None:
@@ -558,7 +595,6 @@ class ExclusionsModal(ModalScreen[bool]):
 
 
 class ConfirmFixModal(ModalScreen[bool]):
-    """Confirm before applying fixes."""
     BINDINGS = [
         Binding("y", "confirm", "Yes"),
         Binding("n", "deny", "No"),
@@ -571,16 +607,20 @@ class ConfirmFixModal(ModalScreen[bool]):
     
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("APPLY SECURITY FIXES?", id="modal-title")
+            yield Label("AUTHORIZE FIX EXECUTION?", id="modal-title")
             yield Rule()
-            yield Label("The following commands will be executed:")
-            yield Static("\n".join(f"  $ {c}" for c in self.commands[:15]))
+            yield Label("Pending Commands:")
+            
+            # FIXED: Removed style argument, used markup instead
+            content = "\n".join(f"  > {c}" for c in self.commands[:15])
+            yield Static(f"[#ffcccc]{content}[/]")
+            
             if len(self.commands) > 15:
                 yield Label(f"  ... and {len(self.commands) - 15} more")
             yield Rule()
             with Horizontal():
-                yield Button("[Y]es, apply", variant="primary", id="btn-yes")
-                yield Button("[N]o, skip", id="btn-no")
+                yield Button("EXECUTE", variant="primary", id="btn-yes")
+                yield Button("ABORT", id="btn-no")
     
     @on(Button.Pressed, "#btn-yes")
     def action_confirm(self) -> None:
@@ -607,8 +647,6 @@ class DragonShieldApp(App):
         Binding("4", "menu_clear", "Clear", show=False),
         Binding("5", "quit", "Quit", show=False),
         Binding("escape", "stop", "Stop scan"),
-        Binding("up", "focus_prev", "Up", show=False),
-        Binding("down", "focus_next", "Down", show=False),
     ]
     
     def __init__(self):
@@ -619,50 +657,55 @@ class DragonShieldApp(App):
         self.pending_fixes: list[str] = []
     
     def compose(self) -> ComposeResult:
-        with Horizontal(id="main-container"):
-            with Vertical(id="menu-panel"):
-                yield Static(SMALL_DRAGON, id="logo")
-                yield Rule()
-                yield OptionList(
-                    Option("[1] Start Scan", id="opt-scan"),
-                    Option("[2] Settings", id="opt-settings"),
-                    Option("[3] Exclusions", id="opt-exclusions"),
-                    Option("[4] Clear Log", id="opt-clear"),
-                    Option("[5] Quit", id="opt-quit"),
-                    id="main-menu"
-                )
-                yield Rule()
-                yield Static("", id="status-info")
-            with Vertical(id="content-panel"):
-                yield ScrollableContainer(id="chat-scroll")
-                yield Static("Ready | [q]uit [1-5]menu [Esc]stop", id="status-line")
+        # Top Section: Dragon Logo and Centered Menu
+        with Vertical(id="top-container"):
+            yield Static(DRAGON_LOGO, id="logo")
+            yield Static(TITLE_TEXT, id="title")
+            
+            with Center():
+                with Vertical(id="menu-container"):
+                    yield OptionList(
+                        Option(" [1] INITIATE SCAN PROCEDURE", id="opt-scan"),
+                        Option(" [2] SYSTEM CONFIGURATION", id="opt-settings"),
+                        Option(" [3] EXCLUSION PROTOCOLS", id="opt-exclusions"),
+                        Option(" [4] PURGE LOGS", id="opt-clear"),
+                        Option(" [5] TERMINATE SESSION", id="opt-quit"),
+                        id="main-menu"
+                    )
+        
+        # Bottom Section: Chat Log
+        yield ScrollableContainer(id="chat-scroll")
+        yield Static("READY | [Q]UIT [1-5]MENU [ESC]STOP", id="status-line")
         yield Footer()
     
     def on_mount(self) -> None:
         self.query_one("#main-menu", OptionList).focus()
-        self.log_msg("system", DRAGON_LOGO)
+        self.log_msg("system", "DragonShield Security System Online.")
         self.log_msg("system", 
-            "System security scanner initialized.\n"
-            "Use arrow keys to navigate, Enter to select.\n"
-            f"Running as: {'root' if os.geteuid() == 0 else 'USER (limited)'}")
+            f"Privilege Level: {'[bold red]ROOT[/]' if os.geteuid() == 0 else '[yellow]LIMITED USER[/]'}\n"
+            "Waiting for command input..."
+        )
         
         if os.geteuid() != 0:
-            self.log_msg("error", "WARNING: Not running as root. Some checks may fail.")
+            self.log_msg("error", "WARNING: Root privileges missing. Scan capabilities limited.")
         
         if not self.config.get("api_key"):
-            self.log_msg("system", "No API key configured. Open [2] Settings first.")
+            self.log_msg("system", "API Key missing. Please configure settings.")
     
     def log_msg(self, role: str, content: str) -> None:
-        """Add message to chat log."""
         container = self.query_one("#chat-scroll", ScrollableContainer)
-        widget = Static(Markdown(content) if role == "assistant" else content, 
-                       classes=f"msg-box msg-{role}")
+        
+        # Ensure markdown renders cleanly in red theme
+        if role == "assistant":
+            widget = Static(Markdown(content), classes=f"msg-box msg-{role}")
+        else:
+            widget = Static(content, classes=f"msg-box msg-{role}")
+            
         container.mount(widget)
         container.scroll_end(animate=False)
     
     def update_status(self, text: str) -> None:
-        self.query_one("#status-info", Static).update(f"[dim]{text}[/dim]")
-        self.query_one("#status-line", Static).update(text)
+        self.query_one("#status-line", Static).update(text.upper())
     
     @on(OptionList.OptionSelected, "#main-menu")
     def on_menu_select(self, event: OptionList.OptionSelected) -> None:
@@ -680,10 +723,10 @@ class DragonShieldApp(App):
     
     def action_menu_scan(self) -> None:
         if self.is_scanning:
-            self.notify("Scan in progress", severity="warning")
+            self.notify("Scan already in progress", severity="warning")
             return
         if not self.config.get("api_key"):
-            self.notify("Configure API key first", severity="error")
+            self.notify("API Key Required", severity="error")
             return
         self.run_scan()
     
@@ -696,22 +739,21 @@ class DragonShieldApp(App):
     def action_menu_clear(self) -> None:
         container = self.query_one("#chat-scroll", ScrollableContainer)
         container.remove_children()
-        self.log_msg("system", "Log cleared.")
+        self.log_msg("system", "Log buffer purged.")
     
     def action_stop(self) -> None:
         if self.is_scanning:
             self.is_scanning = False
-            self.log_msg("error", "Scan aborted by user.")
+            self.log_msg("error", "Scan sequence aborted manually.")
             self.update_status("Stopped")
     
     @work(exclusive=True, thread=False)
     async def run_scan(self) -> None:
-        """Main scan loop with batch command execution."""
         self.is_scanning = True
         self.pending_fixes = []
         
-        self.log_msg("system", f"Starting scan with {self.config.get('model')}...")
-        self.update_status("Scanning...")
+        self.log_msg("system", f"Initializing scan protocol using {self.config.get('model')}...")
+        self.update_status("SCANNING...")
         
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -725,25 +767,22 @@ class DragonShieldApp(App):
                 if not self.is_scanning:
                     break
                 
-                self.update_status(f"Iteration {i+1}/{max_iter}")
+                self.update_status(f"SCANNING... ITERATION {i+1}/{max_iter}")
                 
-                # Call LLM
                 response = await self.engine.call_llm(messages)
                 parsed = self.engine.parse_response(response)
                 action = parsed.get("action", "text")
                 
                 if action == "execute":
-                    # Batch execute commands
                     commands = parsed.get("commands", [])
                     self.log_msg("assistant", f"Executing {len(commands)} command(s)...")
                     
                     results = await self.engine.execute_batch(commands)
                     
-                    # Log each command and result
                     result_text = []
                     for r in results:
-                        status = "OK" if r["success"] else "FAIL"
-                        self.log_msg("command", f"$ {r['cmd']}\n# {r['purpose']}")
+                        status = "SUCCESS" if r["success"] else "FAILED"
+                        self.log_msg("command", f"> {r['cmd']}\n# {r['purpose']}")
                         
                         output = r["output"][:1500]
                         if len(r["output"]) > 1500:
@@ -754,20 +793,19 @@ class DragonShieldApp(App):
                             f"CMD: {r['cmd']}\nSTATUS: {status}\nOUTPUT:\n{r['output'][:3000]}"
                         )
                     
-                    # Add to conversation
                     messages.append({"role": "assistant", "content": response})
                     messages.append({"role": "user", "content": "Results:\n\n" + "\n\n---\n\n".join(result_text)})
                 
                 elif action == "report":
-                    # Final report
-                    self.log_msg("assistant", "# Security Report\n\n" + parsed.get("summary", ""))
+                    self.log_msg("assistant", "# SECURITY REPORT\n\n" + parsed.get("summary", ""))
                     
                     findings = parsed.get("findings", [])
                     for f in findings:
                         sev = f.get("severity", "low").upper()
-                        icon = {"CRITICAL": "!!!", "HIGH": "!!", "MEDIUM": "!", "LOW": "."}.get(sev, "?")
+                        # Red-themed icons
+                        icon = {"CRITICAL": "☠️", "HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(sev, "?")
                         self.log_msg("assistant", 
-                            f"**[{sev}]** {icon} {f.get('issue', 'Unknown')}\n\n"
+                            f"{icon} **[{sev}]** {f.get('issue', 'Unknown')}\n\n"
                             f"Fix: `{f.get('fix_cmd', 'manual review needed')}`"
                         )
                         
@@ -775,32 +813,29 @@ class DragonShieldApp(App):
                             self.pending_fixes.append(f["fix_cmd"])
                     
                     self.is_scanning = False
-                    self.update_status("Scan complete")
+                    self.update_status("SCAN COMPLETE")
                     
-                    # Offer to apply fixes
                     if self.pending_fixes:
-                        self.log_msg("system", f"\n{len(self.pending_fixes)} fix command(s) available.")
+                        self.log_msg("system", f"\n{len(self.pending_fixes)} fix(es) identified.")
                         self.prompt_fixes()
                     break
                 
                 else:
-                    # Plain text
                     self.log_msg("assistant", parsed.get("content", response))
                     messages.append({"role": "assistant", "content": response})
                     messages.append({"role": "user", "content": "Continue analysis or provide final report."})
             
             else:
-                self.log_msg("error", f"Max iterations ({max_iter}) reached.")
+                self.log_msg("error", f"Iteration limit ({max_iter}) reached.")
         
         except Exception as e:
-            self.log_msg("error", f"Error: {e}")
+            self.log_msg("error", f"CRITICAL ERROR: {e}")
         
         finally:
             self.is_scanning = False
-            self.update_status("Ready")
+            self.update_status("READY")
     
     def prompt_fixes(self) -> None:
-        """Show confirmation dialog for fixes."""
         def handle_result(result: bool) -> None:
             if result:
                 self.apply_fixes()
@@ -809,30 +844,25 @@ class DragonShieldApp(App):
     
     @work(exclusive=True, thread=False)
     async def apply_fixes(self) -> None:
-        """Apply security fixes."""
-        self.log_msg("fix", "Applying security fixes...")
-        self.update_status("Applying fixes...")
+        self.log_msg("fix", "APPLYING SECURITY PATCHES...")
+        self.update_status("PATCHING...")
         
         for cmd in self.pending_fixes:
-            self.log_msg("command", f"$ {cmd}")
+            self.log_msg("command", f"> {cmd}")
             success, output = await self.engine.execute_command(cmd)
             
             if success:
                 self.log_msg("result", output if output.strip() else "(done)")
             else:
-                self.log_msg("error", f"Failed: {output}")
+                self.log_msg("error", f"FAILED: {output}")
         
-        self.log_msg("fix", "Fix application complete.")
+        self.log_msg("fix", "Patching sequence finished.")
         self.pending_fixes = []
-        self.update_status("Ready")
+        self.update_status("READY")
     
     async def on_unmount(self) -> None:
         await self.engine.close()
 
-
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
 
 def main():
     if sys.version_info < (3, 10):
