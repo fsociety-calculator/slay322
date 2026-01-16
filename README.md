@@ -1,5 +1,8 @@
 ![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213243.png)
 
+## Process
+![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213127.png)
+
 # DragonShield Installation Guide
 
 Linux security analyzer using AI. Requires Python 3.10+ and an OpenRouter API key.
@@ -67,7 +70,7 @@ sudo venv/bin/python dragon_shield.py
 
 1. Launch the program
 2. Press `2` or select "System Configuration"
-3. Enter your OpenRouter API key (get one at https://openrouter.ai)
+3. Enter your OpenRouter API key (get one at https://openrouter.ai) or configure your own local/remote model
 4. Select preferred model
 5. Save
 
