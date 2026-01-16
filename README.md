@@ -89,3 +89,6 @@ Config file location: `~/.config/dragonshield/config.json`
 - Running without root limits what security checks can be performed
 - Windows paths under WSL are excluded by default
 - Sensitive file patterns are automatically redacted from output
+
+## Result
+![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213127.png)
