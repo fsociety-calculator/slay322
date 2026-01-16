@@ -1,3 +1,5 @@
+![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213243.png)
+
 # DragonShield Installation Guide
 
 Linux security analyzer using AI. Requires Python 3.10+ and an OpenRouter API key.
