@@ -1,7 +1,8 @@
 ![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213243.png)
 
 ## Process
-![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20213127.png)
+![alt text](https://raw.githubusercontent.com/fsociety-calculator/screenshots/refs/heads/main/Screenshot%202026-01-16%20215022.png)
+
 
 # DragonShield Installation Guide
 
